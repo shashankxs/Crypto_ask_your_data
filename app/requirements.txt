@@ -1,0 +1,12 @@
+# Lean dependency set for the Streamlit Cloud deploy — the app only needs
+# to query MotherDuck and call the LLM API, not run dbt itself. The dbt
+# pipeline's dependencies live in the repo-root requirements.txt instead.
+duckdb==1.5.6
+requests>=2.32.0
+streamlit>=1.38.0
+pandas>=2.2.0
+plotly>=5.24.0
+python-dotenv>=1.0.0
+
+# Only needed if you set LLM_PROVIDER=anthropic in .env / Streamlit secrets
+# anthropic>=0.40.0

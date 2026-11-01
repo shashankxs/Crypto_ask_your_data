@@ -107,9 +107,10 @@ Add `MOTHERDUCK_TOKEN` as a repository secret (**Settings → Secrets and variab
 
 ### Deploying the app
 
-Push to GitHub, then deploy `app/app.py` on [Streamlit Community Cloud](https://streamlit.io/cloud)
-for a free public demo link — set `MOTHERDUCK_TOKEN` and `GROQ_API_KEY`
-as Streamlit secrets.
+Deploy `app/app.py` on [Streamlit Community Cloud](https://streamlit.io/cloud)
+for a free public demo link. The app has its own lean `app/requirements.txt`
+(no dbt dependencies) so the Cloud build stays fast. Set `MOTHERDUCK_TOKEN`,
+`GROQ_API_KEY`, and `LLM_PROVIDER` in the app's Streamlit secrets.
 
 ## Sample questions
 
