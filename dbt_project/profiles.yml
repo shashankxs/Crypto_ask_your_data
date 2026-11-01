@@ -1,0 +1,9 @@
+# dbt connects to the same MotherDuck database the ingestion job writes to,
+# so staging/marts models and the Streamlit app all read consistent state.
+crypto_analytics:
+  target: motherduck
+  outputs:
+    motherduck:
+      type: duckdb
+      path: "md:{{ env_var('MD_DATABASE', 'crypto_db') }}?motherduck_token={{ env_var('MOTHERDUCK_TOKEN') }}"
+      threads: 4

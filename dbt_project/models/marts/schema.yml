@@ -1,0 +1,41 @@
+version: 2
+
+models:
+  - name: dim_coin
+    description: One row per coin with its latest known attributes.
+    columns:
+      - name: coin_id
+        tests:
+          - not_null
+          - unique
+
+  - name: fct_coin_latest_snapshot
+    description: Most recent market snapshot per coin (one row per coin_id).
+    columns:
+      - name: coin_id
+        tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('dim_coin')
+                field: coin_id
+
+  - name: fct_coin_price_daily
+    description: Daily price/volume history per coin with 7-day moving average and day-over-day return.
+    columns:
+      - name: coin_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_coin')
+                field: coin_id
+      - name: price_date
+        tests:
+          - not_null
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - coin_id
+            - price_date

@@ -1,0 +1,33 @@
+name: Scheduled ingest + dbt build
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"  # every 6 hours
+  workflow_dispatch: {}
+
+jobs:
+  ingest-and-build:
+    runs-on: ubuntu-latest
+    env:
+      MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+      MD_DATABASE: ${{ vars.MD_DATABASE || 'crypto_db' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ingestion
+        run: python ingestion/ingest_coingecko.py --top 25 --history-days 90
+
+      - name: Install dbt packages
+        working-directory: dbt_project
+        run: dbt deps --profiles-dir .
+
+      - name: Run dbt build (run + test)
+        working-directory: dbt_project
+        run: dbt build --profiles-dir .
