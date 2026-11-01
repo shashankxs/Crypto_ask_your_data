@@ -21,8 +21,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run ingestion
+      - name: Run CoinGecko ingestion
         run: python ingestion/ingest_coingecko.py --top 25 --history-days 90
+
+      - name: Run Fear & Greed Index ingestion
+        run: python ingestion/ingest_fear_greed.py --days 90
 
       - name: Install dbt packages
         working-directory: dbt_project
@@ -31,3 +34,10 @@ jobs:
       - name: Run dbt build (run + test)
         working-directory: dbt_project
         run: dbt build --profiles-dir .
+
+      - name: Notify on failure
+        if: failure() && vars.SLACK_WEBHOOK_URL != ''
+        run: |
+          curl -sf -X POST "${{ vars.SLACK_WEBHOOK_URL }}" \
+            -H 'Content-Type: application/json' \
+            -d '{"text": "crypto-ask-your-data: scheduled ingestion/dbt build failed. See: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'

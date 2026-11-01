@@ -1,0 +1,24 @@
+version: 2
+
+sources:
+  - name: raw_fear_greed
+    description: Crypto Fear & Greed Index from alternative.me, a free independent sentiment signal.
+    schema: raw
+    tables:
+      - name: fear_greed_index
+        description: One row per calendar day with the Fear & Greed Index value (0-100) and its label.
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 30, period: hour}
+          error_after: {count: 72, period: hour}
+        columns:
+          - name: index_date
+            tests:
+              - not_null
+          - name: value
+            tests:
+              - not_null
+              - dbt_utils.accepted_range:
+                  arguments:
+                    min_value: 0
+                    max_value: 100

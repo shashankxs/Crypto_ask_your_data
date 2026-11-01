@@ -64,6 +64,14 @@ marts.fct_coin_price_daily(
     price_7d_moving_avg, daily_return_pct
 )
     -- one row per coin per day of history
+
+marts.fct_market_sentiment_daily(
+    date, market_avg_daily_return_pct, market_total_volume_usd,
+    fear_greed_value, fear_greed_label
+)
+    -- one row per calendar day: aggregated market stats across all tracked
+    -- coins joined with the Crypto Fear & Greed Index (an independent
+    -- sentiment source, 0-100, labeled e.g. "Fear"/"Neutral"/"Greed")
 """
 
 SYSTEM_PROMPT = f"""You are a SQL analyst for a DuckDB/MotherDuck warehouse of
@@ -85,7 +93,7 @@ SUGGESTED_QUESTIONS = [
     "Which 5 coins gained the most in the last 24 hours?",
     "Show bitcoin's daily price and 7-day moving average for the last 30 days",
     "Which coins are furthest below their all-time high right now?",
-    "What's the average daily return for the top 10 coins by market cap?",
+    "Was market sentiment fearful on the days with the biggest price drops?",
 ]
 
 
