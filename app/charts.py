@@ -187,24 +187,45 @@ def build_comparison_chart(series_by_symbol: dict[str, pd.DataFrame]) -> go.Figu
     return fig
 
 
+# Fear -> Greed scale, solid colors. Reused for both the step bands (at low
+# opacity) and the value bar / number (at full opacity, picked by which band
+# the current value falls in) so the pointer always visually matches the
+# band it's sitting on instead of a fixed accent color that ignored meaning.
+_FEAR_GREED_BANDS = [
+    (25, "#e8637a"),   # Extreme Fear
+    (45, "#f5a623"),   # Fear
+    (55, "#a3a3b0"),   # Neutral
+    (75, "#7fe0c4"),   # Greed
+    (101, "#39e6bb"),  # Extreme Greed
+]
+
+
+def _fear_greed_color(value: float) -> str:
+    for upper, color in _FEAR_GREED_BANDS:
+        if value < upper:
+            return color
+    return _FEAR_GREED_BANDS[-1][1]
+
+
 def build_fear_greed_gauge(value: float, label: str) -> go.Figure:
+    bar_color = _fear_greed_color(value)
     fig = go.Figure(
         go.Indicator(
             mode="gauge+number",
             value=value,
-            number=dict(suffix="", font=dict(size=36, color=theme.TEXT_PRIMARY)),
+            number=dict(suffix="", font=dict(size=36, color=bar_color)),
             title=dict(text=label, font=dict(size=14, color=theme.TEXT_SECONDARY)),
             gauge=dict(
                 axis=dict(range=[0, 100], tickcolor=theme.TEXT_MUTED, tickfont=dict(color=theme.TEXT_MUTED)),
-                bar=dict(color=theme.ACCENT, thickness=0.25),
+                bar=dict(color=bar_color, thickness=0.25),
                 bgcolor=theme.SURFACE_RAISED,
                 borderwidth=0,
                 steps=[
-                    dict(range=[0, 25], color="rgba(232,99,122,0.35)"),
-                    dict(range=[25, 45], color="rgba(245,166,35,0.3)"),
-                    dict(range=[45, 55], color="rgba(163,163,176,0.25)"),
-                    dict(range=[55, 75], color="rgba(57,230,187,0.25)"),
-                    dict(range=[75, 100], color="rgba(57,230,187,0.45)"),
+                    dict(range=[0, 25], color="rgba(232,99,122,0.28)"),
+                    dict(range=[25, 45], color="rgba(245,166,35,0.24)"),
+                    dict(range=[45, 55], color="rgba(163,163,176,0.20)"),
+                    dict(range=[55, 75], color="rgba(127,224,196,0.24)"),
+                    dict(range=[75, 100], color="rgba(57,230,187,0.30)"),
                 ],
             ),
         )

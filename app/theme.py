@@ -84,6 +84,10 @@ def inject_css() -> None:
             padding: 0.55rem 0;
             margin: -1rem -1rem 1.2rem -1rem;
             width: calc(100% + 2rem);
+            /* Fade items out at the edges instead of hard-clipping them
+               mid-character as they scroll in/out of view. */
+            -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 48px, #000 calc(100% - 48px), transparent 100%);
+            mask-image: linear-gradient(90deg, transparent 0, #000 48px, #000 calc(100% - 48px), transparent 100%);
         }}
         .ticker-track {{
             display: flex;
@@ -108,6 +112,20 @@ def inject_css() -> None:
         .ticker-item b {{ color: {TEXT_PRIMARY}; font-weight: 600; }}
 
         /* ---------------- Hero ---------------- */
+        .hero-wrap {{
+            position: relative;
+            padding-top: 0.4rem;
+        }}
+        .hero-wrap::before {{
+            content: "";
+            position: absolute;
+            top: -40px; left: -60px;
+            width: 420px; height: 220px;
+            background: radial-gradient(ellipse at center, rgba(91,140,255,0.22) 0%, rgba(155,107,255,0.12) 45%, transparent 72%);
+            filter: blur(10px);
+            z-index: -1;
+            pointer-events: none;
+        }}
         .hero-title {{
             font-size: 2.4rem;
             font-weight: 800;
@@ -227,10 +245,23 @@ def inject_css() -> None:
             background: {SURFACE_RAISED};
             border: 1px solid {GLASS_BORDER};
             color: {TEXT_SECONDARY};
-            border-radius: 999px;
+            border-radius: 18px;
             font-size: 0.84rem;
-            padding: 0.4rem 0.95rem;
+            padding: 0.5rem 0.95rem;
             transition: all 0.16s cubic-bezier(.2,.8,.2,1);
+            /* Let suggested-question chip text wrap to 2 lines instead of
+               truncating with an ellipsis — Streamlit's default button CSS
+               forces single-line + ellipsis, which cut questions mid-word. */
+            white-space: normal !important;
+            height: auto !important;
+            line-height: 1.3;
+            text-overflow: initial !important;
+            overflow: visible !important;
+        }}
+        div[data-testid="stButton"] button p {{
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: initial !important;
         }}
         div[data-testid="stButton"] button:hover {{
             border-color: {ACCENT};
@@ -271,9 +302,69 @@ def inject_css() -> None:
             vertical-align: middle;
         }}
         .trading-grid tr:nth-child(even) td {{ background: rgba(255,255,255,0.015); }}
-        .trading-grid tr:hover td {{ background: rgba(91,140,255,0.06); }}
+        .trading-grid tr:hover td {{ background: rgba(91,140,255,0.10); }}
         .trading-grid img.coin-icon {{ width: 20px; height: 20px; border-radius: 50%; vertical-align: middle; margin-right: 0.5rem; }}
+        .trend-cell {{
+            width: 110px;
+            height: 34px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+        }}
 
+        /* ---------------- Expander (Indicators panel) ---------------- */
+        div[data-testid="stExpander"] summary svg {{
+            transition: transform 0.2s ease;
+        }}
+        div[data-testid="stExpander"] details[open] summary svg {{
+            transform: rotate(90deg);
+        }}
+        .indicator-badge {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 1.1rem;
+            height: 1.1rem;
+            padding: 0 0.3rem;
+            margin-left: 0.4rem;
+            background: {ACCENT};
+            color: white;
+            border-radius: 999px;
+            font-size: 0.68rem;
+            font-weight: 700;
+            animation: badge-pulse 2s ease-in-out infinite;
+        }}
+        @keyframes badge-pulse {{
+            0%, 100% {{ box-shadow: 0 0 0 0 rgba(91,140,255,0.5); }}
+            50% {{ box-shadow: 0 0 0 5px rgba(91,140,255,0); }}
+        }}
+
+        /* ---------------- Footer ---------------- */
+        .footer-links {{
+            display: flex;
+            justify-content: center;
+            gap: 1.4rem;
+            margin-top: 3rem;
+            flex-wrap: wrap;
+        }}
+        .footer-links a {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            color: {TEXT_MUTED};
+            font-size: 0.82rem;
+            text-decoration: none;
+            border: 1px solid {GLASS_BORDER};
+            background: {SURFACE_RAISED};
+            padding: 0.35rem 0.85rem;
+            border-radius: 999px;
+            transition: all 0.16s ease;
+        }}
+        .footer-links a:hover {{
+            color: {TEXT_PRIMARY};
+            border-color: {ACCENT};
+            background: rgba(91,140,255,0.12);
+        }}
         .footer-note {{
             color: {TEXT_MUTED};
             font-size: 0.8rem;

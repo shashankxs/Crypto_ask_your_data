@@ -54,18 +54,25 @@ def render_ticker_tape(overview_df: pd.DataFrame, n: int = 15) -> None:
 
 def stat_card_html(label: str, value: str, delta: str | None = None, delta_color: str = theme.TEXT_MUTED,
                     spark_values: list[float] | None = None, spark_color: str = theme.ACCENT) -> str:
-    delta_html = f'<div class="stat-delta" style="color:{delta_color}">{delta}</div>' if delta else ""
-    spark_html = ""
+    # Built by appending only the parts that actually exist, as one
+    # unbroken line — a placeholder line left empty (e.g. when delta=None)
+    # would read as a blank line to CommonMark, which ends an HTML block
+    # there and lets whatever markup follows (the sparkline) get escaped
+    # and rendered as literal text instead of parsed HTML. This was a real
+    # bug: it hit exactly the "Tracked Market Cap" card, the only one that
+    # combined no delta with a sparkline.
+    parts = [
+        '<div class="glass-card">',
+        f'<div class="stat-label">{label}</div>',
+        f'<div class="stat-value">{value}</div>',
+    ]
+    if delta:
+        parts.append(f'<div class="stat-delta" style="color:{delta_color}">{delta}</div>')
     if spark_values and len(spark_values) >= 2:
-        spark_html = f'<div class="stat-spark">{svg_sparkline(spark_values, width=160, height=36, color=spark_color)}</div>'
-    return f"""
-    <div class="glass-card">
-        <div class="stat-label">{label}</div>
-        <div class="stat-value">{value}</div>
-        {delta_html}
-        {spark_html}
-    </div>
-    """
+        spark_svg = svg_sparkline(spark_values, width=160, height=36, color=spark_color)
+        parts.append(f'<div class="stat-spark">{spark_svg}</div>')
+    parts.append("</div>")
+    return "".join(parts)
 
 
 def skeleton_block(height_px: int = 90) -> str:
@@ -83,7 +90,10 @@ def render_trading_grid(df: pd.DataFrame, sparklines: dict[str, list[float]] | N
         color_24h = theme.pct_color(r.get("price_change_pct_24h"))
         color_7d = theme.pct_color(r.get("price_change_pct_7d"))
         spark = sparklines.get(r["coin_id"], [])
-        spark_svg = svg_sparkline(spark, width=90, height=28, color=color_24h) if spark else ""
+        # width/height match the .trend-cell CSS box exactly (theme.py) so the
+        # SVG never needs clipping — a mismatch here was the root cause of the
+        # sparkline overflowing above the row/header boundary on the first row.
+        spark_svg = svg_sparkline(spark, width=110, height=34, color=color_24h) if spark else ""
         rows_html.append(
             f"<tr>"
             f'<td><img class="coin-icon" src="{r.get("image_url", "")}" /></td>'
@@ -92,7 +102,7 @@ def render_trading_grid(df: pd.DataFrame, sparklines: dict[str, list[float]] | N
             f'<td class="mono" style="color:{color_24h}">{fmt_pct(r.get("price_change_pct_24h"))}</td>'
             f'<td class="mono" style="color:{color_7d}">{fmt_pct(r.get("price_change_pct_7d"))}</td>'
             f'<td class="mono">{fmt_compact(r.get("market_cap_usd"))}</td>'
-            f"<td>{spark_svg}</td>"
+            f'<td><div class="trend-cell">{spark_svg}</div></td>'
             f"</tr>"
         )
     table_html = (
@@ -103,6 +113,46 @@ def render_trading_grid(df: pd.DataFrame, sparklines: dict[str, list[float]] | N
         + "</tbody></table>"
     )
     st.markdown(table_html, unsafe_allow_html=True)
+
+
+def render_live_freshness_badge(freshness: pd.Timestamp) -> None:
+    """A 'Data as of ... (refreshed Xm ago)' pill that keeps counting up
+    client-side, instead of a static timestamp that goes stale-looking the
+    moment the page loads. The pill itself is normal markdown (so it sits
+    inline with the other .pill badges); a tiny hidden JS snippet finds it
+    by its data attribute and updates the "...ago" text every 15s.
+    """
+    iso = pd.Timestamp(freshness).tz_localize("UTC") if freshness.tzinfo is None else freshness
+    iso_str = iso.isoformat()
+    formatted = freshness.strftime("%Y-%m-%d %H:%M UTC")
+    st.markdown(
+        f'<div class="pill" data-live-freshness="{iso_str}">🕒 Data as of {formatted} '
+        f'(<span class="live-ago">just now</span>)</div>',
+        unsafe_allow_html=True,
+    )
+
+    import streamlit.components.v1 as components
+
+    components.html(
+        """
+        <script>
+        (function() {
+            const doc = window.parent.document;
+            function update() {
+                const el = doc.querySelector('[data-live-freshness] .live-ago');
+                const badge = doc.querySelector('[data-live-freshness]');
+                if (!el || !badge) return;
+                const since = new Date(badge.getAttribute('data-live-freshness'));
+                const mins = Math.max(0, Math.round((Date.now() - since.getTime()) / 60000));
+                el.textContent = mins < 1 ? 'just now' : (mins === 1 ? '1m ago' : mins + 'm ago');
+            }
+            update();
+            setInterval(update, 15000);
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 
 def inject_command_palette_shortcut(input_label: str) -> None:

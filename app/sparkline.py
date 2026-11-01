@@ -37,10 +37,13 @@ def svg_sparkline(
         f"{pad:.1f},{height - pad:.1f} " + path + f" {width - pad:.1f},{height - pad:.1f}"
     )
 
-    return f"""
-    <svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" style="display:block">
-        <polygon points="{fill_path}" fill="{color}" fill-opacity="0.12" stroke="none" />
-        <polyline points="{path}" fill="none" stroke="{color}" stroke-width="{stroke_width}"
-                  stroke-linejoin="round" stroke-linecap="round" />
-    </svg>
-    """
+    # Built as a single line, no embedded blank lines: when this gets spliced
+    # into a larger HTML string passed to st.markdown, a blank line here would
+    # prematurely terminate CommonMark's HTML-block parsing and cause
+    # everything after it to render as escaped literal text instead of markup.
+    return (
+        f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" style="display:block">'
+        f'<polygon points="{fill_path}" fill="{color}" fill-opacity="0.12" stroke="none" />'
+        f'<polyline points="{path}" fill="none" stroke="{color}" stroke-width="{stroke_width}" '
+        f'stroke-linejoin="round" stroke-linecap="round" /></svg>'
+    )

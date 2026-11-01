@@ -17,10 +17,12 @@ Run locally:
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -41,11 +43,13 @@ RANGES = ["7D", "30D", "90D", "ALL"]
 
 
 def render_hero() -> None:
-    st.markdown('<div class="hero-title">⚡ Ask Your Crypto Data</div>', unsafe_allow_html=True)
     st.markdown(
+        '<div class="hero-wrap">'
+        '<div class="hero-title">⚡ Ask Your Crypto Data</div>'
         '<div class="hero-sub">A dbt-modeled warehouse of live crypto market data, '
-        "queried in plain English — press <span class=\"kbd-hint\">⌘K</span> or "
-        "<span class=\"kbd-hint\">Ctrl+K</span> to ask anything.</div>",
+        'queried in plain English — press <span class="kbd-hint">⌘K</span> or '
+        '<span class="kbd-hint">Ctrl+K</span> to ask anything.</div>'
+        '</div>',
         unsafe_allow_html=True,
     )
 
@@ -57,16 +61,32 @@ def render_kpis(df: pd.DataFrame) -> None:
     worst = df.loc[df["price_change_pct_24h"].idxmin()]
     freshness = pd.to_datetime(df["snapshot_loaded_at"].max())
 
+    con = data.get_duckdb_connection()
+
     # Sparkline for the market-cap card: aggregate daily market cap across
-    # the top coins over the last 30 days.
-    mcap_spark = data.get_duckdb_connection().execute(
+    # the top coins over the last 14 days.
+    mcap_spark = con.execute(
         """
         select price_date, sum(market_cap_usd) as total_mcap
         from marts.fct_coin_price_daily
-        where price_date >= current_date - 30
+        where price_date >= current_date - 14
         group by price_date order by price_date
         """
     ).fetchdf()
+
+    # Sparkline for the avg-24h-change card: the market's average daily
+    # return across all tracked coins, per day.
+    avg_return_spark = con.execute(
+        """
+        select price_date, avg(daily_return_pct) as avg_return
+        from marts.fct_coin_price_daily
+        where price_date >= current_date - 14
+        group by price_date order by price_date
+        """
+    ).fetchdf()
+
+    best_spark = data.load_price_daily(best["coin_id"], days=14)
+    worst_spark = data.load_price_daily(worst["coin_id"], days=14)
 
     cols = st.columns(4)
     with cols[0]:
@@ -80,7 +100,11 @@ def render_kpis(df: pd.DataFrame) -> None:
         )
     with cols[1]:
         st.markdown(
-            comp.stat_card_html("Avg 24h Change", comp.fmt_pct(avg_24h), delta_color=theme.pct_color(avg_24h)),
+            comp.stat_card_html(
+                "Avg 24h Change", comp.fmt_pct(avg_24h), delta_color=theme.pct_color(avg_24h),
+                spark_values=avg_return_spark["avg_return"].tolist() if not avg_return_spark.empty else None,
+                spark_color=theme.pct_color(avg_24h),
+            ),
             unsafe_allow_html=True,
         )
     with cols[2]:
@@ -88,6 +112,8 @@ def render_kpis(df: pd.DataFrame) -> None:
             comp.stat_card_html(
                 "Top Gainer (24h)", f'{best["symbol"]} {comp.fmt_pct(best["price_change_pct_24h"])}',
                 delta_color=theme.GOOD,
+                spark_values=best_spark["price_usd"].tolist() if not best_spark.empty else None,
+                spark_color=theme.GOOD,
             ),
             unsafe_allow_html=True,
         )
@@ -96,16 +122,18 @@ def render_kpis(df: pd.DataFrame) -> None:
             comp.stat_card_html(
                 "Top Loser (24h)", f'{worst["symbol"]} {comp.fmt_pct(worst["price_change_pct_24h"])}',
                 delta_color=theme.CRITICAL,
+                spark_values=worst_spark["price_usd"].tolist() if not worst_spark.empty else None,
+                spark_color=theme.CRITICAL,
             ),
             unsafe_allow_html=True,
         )
 
     st.markdown(
-        f'<div class="pill">🕒 Data as of {freshness.strftime("%Y-%m-%d %H:%M UTC")}</div>'
         f'<div class="pill">🪙 {len(df)} coins tracked</div>'
-        f'<div class="pill">🔁 Refreshed every 6h via GitHub Actions</div>',
+        '<div class="pill">🔁 Refreshed every 6h via GitHub Actions</div>',
         unsafe_allow_html=True,
     )
+    comp.render_live_freshness_badge(freshness)
 
 
 def render_market_table(df: pd.DataFrame) -> None:
@@ -145,13 +173,26 @@ def render_technical_chart(coin_choices: pd.DataFrame) -> None:
         chart_type_options = ["Candlestick", "Line", "Area"] if has_ohlc_res else ["Line", "Area"]
         chart_type = st.selectbox("Chart type", chart_type_options, index=0).lower()
     with top_cols[3]:
-        with st.expander("Indicators", expanded=False):
+        # st.expander's label is plain text only (no HTML/badges supported),
+        # so the "active indicator count" cue is baked into the label text
+        # itself, read from each checkbox's prior-run session_state value
+        # (available before the expander/checkboxes are (re)created this run).
+        ind_keys = ["ind_ma7", "ind_ma25", "ind_ma50", "ind_bollinger", "ind_rsi", "ind_macd"]
+        ind_defaults = [True, False, False, False, False, False]
+        active_count = sum(
+            st.session_state.get(k, d) for k, d in zip(ind_keys, ind_defaults)
+        )
+        expander_label = f"Indicators ({active_count} active)" if active_count else "Indicators"
+        with st.expander(expander_label, expanded=False):
             ma_cols = st.columns(3)
-            show_mas = [w for w, c in zip((7, 25, 50), ma_cols) if c.checkbox(f"MA{w}", value=(w == 7))]
+            show_mas = [
+                w for w, c, k in zip((7, 25, 50), ma_cols, ind_keys[:3])
+                if c.checkbox(f"MA{w}", value=(w == 7), key=k)
+            ]
             ind_cols = st.columns(3)
-            show_bollinger = ind_cols[0].checkbox("Bollinger Bands")
-            show_rsi = ind_cols[1].checkbox("RSI")
-            show_macd = ind_cols[2].checkbox("MACD")
+            show_bollinger = ind_cols[0].checkbox("Bollinger Bands", key="ind_bollinger")
+            show_rsi = ind_cols[1].checkbox("RSI", key="ind_rsi")
+            show_macd = ind_cols[2].checkbox("MACD", key="ind_macd")
 
     if not has_ohlc_res and chart_type == "candlestick":
         chart_type = "line"
@@ -180,9 +221,15 @@ def render_technical_chart(coin_choices: pd.DataFrame) -> None:
 
     dl_cols = st.columns([1, 1, 6])
     with dl_cols[0]:
-        st.download_button("⬇ CSV", price_df.to_csv(index=False), file_name=f"{coin_id}_daily.csv", width="stretch")
+        st.download_button(
+            "⬇ CSV", price_df.to_csv(index=False), file_name=f"{coin_id}_daily.csv", width="stretch",
+            help="Download this chart's underlying daily data as CSV.",
+        )
     with dl_cols[1]:
-        st.caption("PNG export: camera icon in chart toolbar ⤴")
+        st.button(
+            "📷 PNG", key="png_hint", disabled=True, width="stretch",
+            help="Use the camera icon in the chart's toolbar (top-right of the chart) to export as PNG.",
+        )
 
 
 def render_comparison(coin_choices: pd.DataFrame) -> None:
@@ -212,7 +259,10 @@ def render_ask_section() -> None:
     chip_cols = st.columns(len(ai.SUGGESTED_QUESTIONS))
     for col, q in zip(chip_cols, ai.SUGGESTED_QUESTIONS):
         with col:
-            if st.button(q, key=f"chip_{q}", width="stretch"):
+            # help= gives a hover tooltip with the full text as a second
+            # safety net alongside the CSS white-space:normal fix (theme.py)
+            # — belt-and-suspenders against truncation on narrow columns.
+            if st.button(q, key=f"chip_{q}", width="stretch", help=q):
                 st.session_state["question"] = q
 
     input_label = "Ask a question about the crypto market"
@@ -266,8 +316,6 @@ def render_ask_section() -> None:
     date_cols = [c for c in df.columns if "date" in c.lower() or "time" in c.lower()]
     template = theme.plotly_dark_template()
 
-    import plotly.graph_objects as go
-
     if numeric_cols and date_cols:
         fig = go.Figure()
         for i, col in enumerate(numeric_cols):
@@ -288,8 +336,18 @@ def render_ask_section() -> None:
 
 
 def render_footer() -> None:
+    repo_url = os.environ.get("GITHUB_REPO_URL", "https://github.com/shashankxs/Crypto_ask_your_data")
+    dbt_docs_url = os.environ.get("DBT_DOCS_URL", "https://shashankxs.github.io/Crypto_ask_your_data/")
+    ci_url = f"{repo_url}/actions/workflows/ci.yml"
+    ci_badge = f"{repo_url}/actions/workflows/ci.yml/badge.svg"
+
     st.markdown(
-        '<div class="footer-note">Built with CoinGecko · alternative.me · dbt · MotherDuck · '
+        f'<div class="footer-links">'
+        f'<a href="{repo_url}" target="_blank">🐙 GitHub repo</a>'
+        f'<a href="{dbt_docs_url}" target="_blank">🗺️ dbt lineage graph</a>'
+        f'<a href="{ci_url}" target="_blank"><img src="{ci_badge}" alt="CI status" style="height:14px;vertical-align:middle;margin-right:0.3rem;" />CI status</a>'
+        f'</div>'
+        f'<div class="footer-note">Built with CoinGecko · alternative.me · dbt · MotherDuck · '
         f"{('Anthropic Claude' if ai.LLM_PROVIDER == 'anthropic' else 'Groq')} · Streamlit · "
         "orchestrated via GitHub Actions</div>",
         unsafe_allow_html=True,
