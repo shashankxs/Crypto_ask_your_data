@@ -1,5 +1,5 @@
 with source as (
-    select * from raw.coin_market_snapshot
+    select * from {{ source('raw', 'coin_market_snapshot') }}
 )
 
 select

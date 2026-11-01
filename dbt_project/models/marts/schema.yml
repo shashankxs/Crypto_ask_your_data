@@ -20,6 +20,26 @@ models:
               arguments:
                 to: ref('dim_coin')
                 field: coin_id
+      - name: symbol
+        tests:
+          - not_null
+      - name: price_usd
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+      - name: market_cap_usd
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: volume_usd
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
 
   - name: fct_coin_price_daily
     description: Daily price/volume history per coin with 7-day moving average and day-over-day return.
@@ -34,8 +54,38 @@ models:
       - name: price_date
         tests:
           - not_null
+      - name: price_usd
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+      - name: volume_usd
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - coin_id
-            - price_date
+          arguments:
+            combination_of_columns:
+              - coin_id
+              - price_date
+
+  - name: fct_market_sentiment_daily
+    description: >
+      One row per calendar date joining aggregated market stats (from CoinGecko
+      price history) with the Fear & Greed Index (from alternative.me) —
+      a second, independently-sourced signal joined on date.
+    columns:
+      - name: date
+        tests:
+          - not_null
+          - unique
+      - name: fear_greed_value
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100

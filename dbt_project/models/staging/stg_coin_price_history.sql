@@ -9,7 +9,7 @@ with source as (
         price_usd,
         total_volume_usd,
         market_cap_usd
-    from raw.coin_price_history
+    from {{ source('raw', 'coin_price_history') }}
 ),
 
 deduped as (
