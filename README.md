@@ -14,6 +14,8 @@ hardened LLM query layer → a polished UI.**
 
 **Live demo:** _add your Streamlit Community Cloud URL here once deployed_
 
+**dbt docs / lineage graph:** https://shashankxs.github.io/Crypto_ask_your_data/
+
 ## Architecture
 
 ```
