@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest requests-mock
+      - name: Run unit tests (ingestion + SQL validator) — no secrets, no live calls
+        run: python -m pytest tests/ -v
+
+  dbt-build-isolated:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    # Runs the full pipeline against a throwaway MotherDuck database so a PR
+    # never touches production data, and fails fast if a model/test change
+    # breaks the build.
+    env:
+      MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+      MD_DATABASE: crypto_db_ci_pr${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Seed a small sample into the isolated CI database
+        run: |
+          python ingestion/ingest_coingecko.py --top 5 --history-days 14
+          python ingestion/ingest_fear_greed.py --days 14
+
+      - name: Install dbt packages
+        working-directory: dbt_project
+        run: dbt deps --profiles-dir .
+
+      - name: dbt build (run + test) against the isolated database
+        working-directory: dbt_project
+        run: dbt build --profiles-dir .
+
+      - name: Tear down the isolated CI database
+        if: always()
+        run: |
+          python - <<'EOF'
+          import os, duckdb
+          token = os.environ["MOTHERDUCK_TOKEN"]
+          database = os.environ["MD_DATABASE"]
+          con = duckdb.connect(f"md:?motherduck_token={token}")
+          con.execute(f"DROP DATABASE IF EXISTS {database}")
+          con.close()
+          EOF

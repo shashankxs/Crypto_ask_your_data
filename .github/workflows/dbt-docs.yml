@@ -1,0 +1,48 @@
+name: Publish dbt docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-docs:
+    runs-on: ubuntu-latest
+    env:
+      MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+      MD_DATABASE: ${{ vars.MD_DATABASE || 'crypto_db' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Install dbt packages
+        working-directory: dbt_project
+        run: dbt deps --profiles-dir .
+      - name: Generate dbt docs (lineage graph + catalog)
+        working-directory: dbt_project
+        run: dbt docs generate --profiles-dir .
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dbt_project/target
+
+  deploy-docs:
+    needs: build-docs
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
