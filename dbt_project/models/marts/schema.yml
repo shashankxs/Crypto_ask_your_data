@@ -89,3 +89,40 @@ models:
               arguments:
                 min_value: 0
                 max_value: 100
+
+  - name: fct_coin_ohlc
+    description: >
+      Candlestick (OHLC) data per coin. CoinGecko auto-selects candle width
+      by the requested day window - at our 90-day window this is ~4-day
+      candles, not daily.
+    columns:
+      - name: coin_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_coin')
+                field: coin_id
+      - name: candle_time
+        tests:
+          - not_null
+      - name: high
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+      - name: low
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - coin_id
+              - candle_time
