@@ -1,435 +1,101 @@
 """
-"Ask Your Data" — a natural-language front end over the crypto warehouse
-built by ingestion/ingest_coingecko.py + the dbt_project/ models.
+"Ask Your Crypto Data" — a premium-feeling crypto analytics dashboard with
+a natural-language query layer over a dbt-modeled MotherDuck warehouse.
 
-The user asks a plain-English question; an LLM translates it into a SQL
-query against the dbt marts (schema injected into the prompt), the app
-executes it read-only against MotherDuck, and renders a table + chart.
-
-Supports two LLM providers (set LLM_PROVIDER in .env):
-    groq      (default) — free API, no credit card required: https://console.groq.com
-    anthropic — requires a billed Anthropic API key
+Architecture:
+    data.py       - all DuckDB/MotherDuck queries (cached)
+    indicators.py - MA / Bollinger / RSI / MACD, hand-rolled in pandas
+    charts.py     - Plotly figure builders (technical chart, gauge, comparison)
+    sparkline.py  - inline SVG sparklines (KPI cards, table cells)
+    components.py - HTML/CSS widgets (ticker tape, cards, trading-grid table)
+    theme.py      - palette + CSS + Plotly template
+    ai.py         - natural-language-to-SQL (Groq by default, Anthropic optional)
+                    and the SQL safety guardrail
 
 Run locally:
     streamlit run app/app.py
 """
 from __future__ import annotations
 
-import os
-import re
+import sys
+from pathlib import Path
 
-import duckdb
 import pandas as pd
-import plotly.graph_objects as go
-import requests
 import streamlit as st
 from dotenv import load_dotenv
 
+# Not every launcher (Streamlit Cloud, AppTest) adds this script's own
+# directory to sys.path the way `streamlit run app/app.py` does locally —
+# add it explicitly so the sibling-module imports below always resolve.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import ai  # noqa: E402
+import charts  # noqa: E402
+import components as comp  # noqa: E402
+import data  # noqa: E402
+import theme  # noqa: E402
+
 load_dotenv()
 
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq").lower()
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-
-# ---------------------------------------------------------------------------
-# Palette (validated: references/palette.md — dark-mode steps)
-# ---------------------------------------------------------------------------
-PAGE_PLANE = "#0d0d0d"
-SURFACE = "#1a1a19"
-SURFACE_RAISED = "#202020"
-TEXT_PRIMARY = "#f0efec"
-TEXT_SECONDARY = "#c3c2b7"
-TEXT_MUTED = "#898781"
-GRIDLINE = "#2c2c2a"
-BASELINE = "#383835"
-BORDER = "rgba(255,255,255,0.10)"
-GOOD = "#0ca30c"
-CRITICAL = "#e66767"
-CATEGORICAL = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
-
-SCHEMA_DESCRIPTION = """
-You can query these dbt-modeled tables in the `marts` schema:
-
-marts.dim_coin(coin_id, symbol, name, image_url, market_cap_rank)
-    -- one row per coin
-
-marts.fct_coin_latest_snapshot(
-    coin_id, symbol, name, image_url, market_cap_rank, price_usd, market_cap_usd,
-    volume_usd, price_change_pct_24h, price_change_pct_7d,
-    circulating_supply, all_time_high_usd, ath_change_pct, snapshot_loaded_at
-)
-    -- latest point-in-time snapshot per coin
-
-marts.fct_coin_price_daily(
-    coin_id, price_date, price_usd, volume_usd, market_cap_usd,
-    price_7d_moving_avg, daily_return_pct
-)
-    -- one row per coin per day of history
-
-marts.fct_market_sentiment_daily(
-    date, market_avg_daily_return_pct, market_total_volume_usd,
-    fear_greed_value, fear_greed_label
-)
-    -- one row per calendar day: aggregated market stats across all tracked
-    -- coins joined with the Crypto Fear & Greed Index (an independent
-    -- sentiment source, 0-100, labeled e.g. "Fear"/"Neutral"/"Greed")
-"""
-
-SYSTEM_PROMPT = f"""You are a SQL analyst for a DuckDB/MotherDuck warehouse of
-cryptocurrency market data. {SCHEMA_DESCRIPTION}
-
-Rules:
-- Write exactly one read-only DuckDB SQL SELECT query that answers the user's question.
-- Only reference the tables and columns listed above.
-- Never write INSERT, UPDATE, DELETE, DROP, ALTER, or any DDL/DML statement.
-- Return ONLY the SQL query, no explanation, no markdown code fences.
-"""
-
-FORBIDDEN_PATTERN = re.compile(
-    r"\b(insert|update|delete|drop|alter|create|truncate|attach|copy|pragma|call)\b",
-    re.IGNORECASE,
-)
-
-SUGGESTED_QUESTIONS = [
-    "Which 5 coins gained the most in the last 24 hours?",
-    "Show bitcoin's daily price and 7-day moving average for the last 30 days",
-    "Which coins are furthest below their all-time high right now?",
-    "Was market sentiment fearful on the days with the biggest price drops?",
-]
+RANGES = ["7D", "30D", "90D", "ALL"]
 
 
-# ---------------------------------------------------------------------------
-# Data access
-# ---------------------------------------------------------------------------
-@st.cache_resource(ttl=300)
-def get_duckdb_connection() -> duckdb.DuckDBPyConnection:
-    token = os.environ.get("MOTHERDUCK_TOKEN")
-    database = os.environ.get("MD_DATABASE", "crypto_db")
-    if not token:
-        st.error("MOTHERDUCK_TOKEN is not set. Add it to .env or Streamlit secrets.")
-        st.stop()
-    return duckdb.connect(f"md:{database}?motherduck_token={token}", read_only=True)
-
-
-@st.cache_data(ttl=300)
-def load_overview() -> pd.DataFrame:
-    con = get_duckdb_connection()
-    return con.execute(
-        """
-        select coin_id, symbol, name, image_url, market_cap_rank, price_usd,
-               market_cap_usd, volume_usd, price_change_pct_24h, price_change_pct_7d,
-               ath_change_pct, snapshot_loaded_at
-        from marts.fct_coin_latest_snapshot
-        order by market_cap_rank
-        """
-    ).fetchdf()
-
-
-@st.cache_data(ttl=300)
-def load_sparkline(coin_id: str) -> pd.DataFrame:
-    con = get_duckdb_connection()
-    return con.execute(
-        "select price_date, price_usd from marts.fct_coin_price_daily "
-        "where coin_id = ? order by price_date",
-        [coin_id],
-    ).fetchdf()
-
-
-# ---------------------------------------------------------------------------
-# LLM text-to-SQL
-# ---------------------------------------------------------------------------
-def question_to_sql(question: str) -> str:
-    raw = _call_anthropic(question) if LLM_PROVIDER == "anthropic" else _call_groq(question)
-    return re.sub(r"^```sql\s*|```$", "", raw.strip(), flags=re.IGNORECASE | re.MULTILINE).strip()
-
-
-def _call_groq(question: str) -> str:
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        st.error("GROQ_API_KEY is not set. Get a free key at https://console.groq.com and add it to .env.")
-        st.stop()
-    resp = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "model": GROQ_MODEL,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": question},
-            ],
-            "max_completion_tokens": 1024,
-            "temperature": 0,
-            # gpt-oss is a reasoning model; keep its chain-of-thought out of
-            # `content` so it doesn't eat the token budget or leak into the SQL.
-            "reasoning_effort": "low",
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    content = resp.json()["choices"][0]["message"]["content"]
-    if not content.strip():
-        raise ValueError("The model returned an empty response — try rephrasing the question.")
-    return content
-
-
-def _call_anthropic(question: str) -> str:
-    from anthropic import Anthropic  # optional dependency, only needed for this provider
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        st.error("ANTHROPIC_API_KEY is not set. Add it to .env or Streamlit secrets.")
-        st.stop()
-    client = Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model="claude-sonnet-5-5",
-        max_tokens=400,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": question}],
-    )
-    return response.content[0].text
-
-
-def validate_sql(sql: str) -> None:
-    stripped = sql.strip()
-    if not (stripped.lower().startswith("select") or stripped.lower().startswith("with")):
-        raise ValueError("Generated query must be a single SELECT (optionally with CTEs) statement.")
-    if FORBIDDEN_PATTERN.search(sql):
-        raise ValueError("Generated query contains a disallowed keyword.")
-    if ";" in stripped.rstrip(";"):
-        raise ValueError("Only a single statement is allowed.")
-
-
-# ---------------------------------------------------------------------------
-# Formatting helpers
-# ---------------------------------------------------------------------------
-def fmt_usd(value: float) -> str:
-    if value is None or pd.isna(value):
-        return "—"
-    return f"${value:,.2f}" if value < 1000 else f"${value:,.0f}"
-
-
-def fmt_compact(value: float) -> str:
-    if value is None or pd.isna(value):
-        return "—"
-    for threshold, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
-        if abs(value) >= threshold:
-            return f"${value / threshold:,.2f}{suffix}"
-    return f"${value:,.0f}"
-
-
-def fmt_pct(value: float) -> str:
-    if value is None or pd.isna(value):
-        return "—"
-    sign = "+" if value >= 0 else ""
-    return f"{sign}{value:,.2f}%"
-
-
-def pct_color(value: float) -> str:
-    if value is None or pd.isna(value):
-        return TEXT_MUTED
-    return GOOD if value >= 0 else CRITICAL
-
-
-# ---------------------------------------------------------------------------
-# UI chrome
-# ---------------------------------------------------------------------------
-def inject_css() -> None:
-    st.markdown(
-        f"""
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-
-        html, body, [class*="css"] {{
-            font-family: 'Inter', system-ui, -apple-system, "Segoe UI", sans-serif !important;
-        }}
-        .stApp {{
-            background: radial-gradient(circle at 15% 0%, #14213a 0%, {PAGE_PLANE} 45%);
-        }}
-        #MainMenu, footer, header {{ visibility: hidden; }}
-
-        .hero-title {{
-            font-size: 2.6rem;
-            font-weight: 800;
-            background: linear-gradient(90deg, #3987e5 0%, #9085e9 60%, #d55181 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 0.1rem;
-            letter-spacing: -0.02em;
-        }}
-        .hero-sub {{
-            color: {TEXT_SECONDARY};
-            font-size: 1.02rem;
-            margin-bottom: 1.6rem;
-        }}
-
-        .stat-card {{
-            background: {SURFACE};
-            border: 1px solid {BORDER};
-            border-radius: 16px;
-            padding: 1.1rem 1.3rem;
-            box-shadow: 0 4px 24px rgba(0,0,0,0.25);
-            transition: transform 0.15s ease, border-color 0.15s ease;
-        }}
-        .stat-card:hover {{
-            transform: translateY(-2px);
-            border-color: rgba(57,135,229,0.4);
-        }}
-        .stat-label {{
-            color: {TEXT_MUTED};
-            font-size: 0.78rem;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            font-weight: 600;
-            margin-bottom: 0.3rem;
-        }}
-        .stat-value {{
-            color: {TEXT_PRIMARY};
-            font-size: 1.65rem;
-            font-weight: 700;
-            line-height: 1.1;
-        }}
-        .stat-delta {{
-            font-size: 0.92rem;
-            font-weight: 600;
-            margin-top: 0.25rem;
-        }}
-
-        .section-title {{
-            color: {TEXT_PRIMARY};
-            font-size: 1.3rem;
-            font-weight: 700;
-            margin-top: 2.2rem;
-            margin-bottom: 0.9rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }}
-        .pill {{
-            display: inline-block;
-            background: {SURFACE_RAISED};
-            border: 1px solid {BORDER};
-            color: {TEXT_SECONDARY};
-            border-radius: 999px;
-            padding: 0.2rem 0.75rem;
-            font-size: 0.78rem;
-            margin-right: 0.4rem;
-        }}
-
-        div[data-testid="stTextInput"] input {{
-            background: {SURFACE} !important;
-            border: 1px solid {BORDER} !important;
-            border-radius: 12px !important;
-            color: {TEXT_PRIMARY} !important;
-            font-size: 1.05rem !important;
-            padding: 0.85rem 1rem !important;
-        }}
-        div[data-testid="stTextInput"] input:focus {{
-            border-color: #3987e5 !important;
-            box-shadow: 0 0 0 2px rgba(57,135,229,0.25) !important;
-        }}
-
-        div[data-testid="stButton"] button {{
-            background: {SURFACE_RAISED};
-            border: 1px solid {BORDER};
-            color: {TEXT_SECONDARY};
-            border-radius: 999px;
-            font-size: 0.85rem;
-            padding: 0.35rem 0.9rem;
-            transition: all 0.15s ease;
-        }}
-        div[data-testid="stButton"] button:hover {{
-            border-color: #3987e5;
-            color: {TEXT_PRIMARY};
-            background: rgba(57,135,229,0.12);
-        }}
-        div[data-testid="stButton"] button[kind="primary"] {{
-            background: linear-gradient(90deg, #3987e5, #9085e9);
-            border: none;
-            color: white;
-            font-weight: 600;
-            padding: 0.6rem 1.6rem;
-        }}
-
-        .footer-note {{
-            color: {TEXT_MUTED};
-            font-size: 0.82rem;
-            margin-top: 3rem;
-            text-align: center;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def plotly_dark_template() -> go.layout.Template:
-    return go.layout.Template(
-        layout=go.Layout(
-            paper_bgcolor=SURFACE,
-            plot_bgcolor=SURFACE,
-            font=dict(color=TEXT_PRIMARY, family="Inter, sans-serif"),
-            colorway=CATEGORICAL,
-            xaxis=dict(gridcolor=GRIDLINE, zerolinecolor=BASELINE, linecolor=BASELINE),
-            yaxis=dict(gridcolor=GRIDLINE, zerolinecolor=BASELINE, linecolor=BASELINE),
-            legend=dict(bgcolor="rgba(0,0,0,0)"),
-            margin=dict(l=10, r=10, t=30, b=10),
-            hoverlabel=dict(bgcolor=SURFACE_RAISED, font_color=TEXT_PRIMARY, bordercolor=BORDER),
-        )
-    )
-
-
-def stat_card(label: str, value: str, delta: str | None = None, delta_color: str = TEXT_MUTED) -> str:
-    delta_html = f'<div class="stat-delta" style="color:{delta_color}">{delta}</div>' if delta else ""
-    return f"""
-    <div class="stat-card">
-        <div class="stat-label">{label}</div>
-        <div class="stat-value">{value}</div>
-        {delta_html}
-    </div>
-    """
-
-
-# ---------------------------------------------------------------------------
-# Sections
-# ---------------------------------------------------------------------------
 def render_hero() -> None:
-    st.markdown('<div class="hero-title">📊 Ask Your Crypto Data</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-title">⚡ Ask Your Crypto Data</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="hero-sub">A dbt-modeled warehouse of live CoinGecko market data, '
-        "queried in plain English — an LLM writes the SQL, DuckDB/MotherDuck runs it.</div>",
+        '<div class="hero-sub">A dbt-modeled warehouse of live crypto market data, '
+        "queried in plain English — press <span class=\"kbd-hint\">⌘K</span> or "
+        "<span class=\"kbd-hint\">Ctrl+K</span> to ask anything.</div>",
         unsafe_allow_html=True,
     )
 
 
-def render_stats(df: pd.DataFrame) -> None:
+def render_kpis(df: pd.DataFrame) -> None:
     total_mcap = df["market_cap_usd"].sum()
     avg_24h = df["price_change_pct_24h"].mean()
     best = df.loc[df["price_change_pct_24h"].idxmax()]
     worst = df.loc[df["price_change_pct_24h"].idxmin()]
     freshness = pd.to_datetime(df["snapshot_loaded_at"].max())
 
+    # Sparkline for the market-cap card: aggregate daily market cap across
+    # the top coins over the last 30 days.
+    mcap_spark = data.get_duckdb_connection().execute(
+        """
+        select price_date, sum(market_cap_usd) as total_mcap
+        from marts.fct_coin_price_daily
+        where price_date >= current_date - 30
+        group by price_date order by price_date
+        """
+    ).fetchdf()
+
     cols = st.columns(4)
     with cols[0]:
-        st.markdown(stat_card("Tracked Market Cap", fmt_compact(total_mcap)), unsafe_allow_html=True)
+        st.markdown(
+            comp.stat_card_html(
+                "Tracked Market Cap", comp.fmt_compact(total_mcap),
+                spark_values=mcap_spark["total_mcap"].tolist() if not mcap_spark.empty else None,
+                spark_color=theme.ACCENT,
+            ),
+            unsafe_allow_html=True,
+        )
     with cols[1]:
         st.markdown(
-            stat_card("Avg 24h Change", fmt_pct(avg_24h), delta_color=pct_color(avg_24h)),
+            comp.stat_card_html("Avg 24h Change", comp.fmt_pct(avg_24h), delta_color=theme.pct_color(avg_24h)),
             unsafe_allow_html=True,
         )
     with cols[2]:
         st.markdown(
-            stat_card(
-                "Top Gainer (24h)",
-                f'{best["symbol"]} {fmt_pct(best["price_change_pct_24h"])}',
-                delta_color=GOOD,
+            comp.stat_card_html(
+                "Top Gainer (24h)", f'{best["symbol"]} {comp.fmt_pct(best["price_change_pct_24h"])}',
+                delta_color=theme.GOOD,
             ),
             unsafe_allow_html=True,
         )
     with cols[3]:
         st.markdown(
-            stat_card(
-                "Top Loser (24h)",
-                f'{worst["symbol"]} {fmt_pct(worst["price_change_pct_24h"])}',
-                delta_color=CRITICAL,
+            comp.stat_card_html(
+                "Top Loser (24h)", f'{worst["symbol"]} {comp.fmt_pct(worst["price_change_pct_24h"])}',
+                delta_color=theme.CRITICAL,
             ),
             unsafe_allow_html=True,
         )
@@ -444,25 +110,97 @@ def render_stats(df: pd.DataFrame) -> None:
 
 def render_market_table(df: pd.DataFrame) -> None:
     st.markdown('<div class="section-title">💹 Market Overview</div>', unsafe_allow_html=True)
-    view = df[
-        ["image_url", "name", "symbol", "price_usd", "price_change_pct_24h",
-         "price_change_pct_7d", "market_cap_usd", "ath_change_pct"]
-    ].copy()
-    st.dataframe(
-        view,
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "image_url": st.column_config.ImageColumn(" ", width="small"),
-            "name": st.column_config.TextColumn("Coin"),
-            "symbol": st.column_config.TextColumn("Ticker"),
-            "price_usd": st.column_config.NumberColumn("Price", format="$%.2f"),
-            "price_change_pct_24h": st.column_config.NumberColumn("24h %", format="%.2f%%"),
-            "price_change_pct_7d": st.column_config.NumberColumn("7d %", format="%.2f%%"),
-            "market_cap_usd": st.column_config.NumberColumn("Market Cap", format="compact"),
-            "ath_change_pct": st.column_config.NumberColumn("vs ATH", format="%.1f%%"),
-        },
+    sparklines: dict[str, list[float]] = {}
+    for coin_id in df["coin_id"].head(15):
+        hist = data.load_price_daily(coin_id, days=14)
+        if not hist.empty:
+            sparklines[coin_id] = hist["price_usd"].tolist()
+    comp.render_trading_grid(df, sparklines=sparklines)
+
+
+def render_fear_greed(days: int | None) -> None:
+    sentiment = data.load_sentiment_daily(days=days)
+    if sentiment.empty:
+        return
+    latest = sentiment.iloc[-1]
+    st.plotly_chart(
+        charts.build_fear_greed_gauge(latest["fear_greed_value"], latest["fear_greed_label"]),
+        width="stretch", config={"displayModeBar": False},
     )
+
+
+def render_technical_chart(coin_choices: pd.DataFrame) -> None:
+    st.markdown('<div class="section-title">📈 Technical Chart</div>', unsafe_allow_html=True)
+
+    top_cols = st.columns([2, 2, 2, 3])
+    with top_cols[0]:
+        label_to_id = {f'{r["name"]} ({r["symbol"]})': r["coin_id"] for _, r in coin_choices.iterrows()}
+        chosen_label = st.selectbox("Coin", list(label_to_id.keys()), index=0)
+        coin_id = label_to_id[chosen_label]
+    with top_cols[1]:
+        time_range = st.radio("Range", RANGES, horizontal=True, index=2, label_visibility="collapsed")
+    with top_cols[2]:
+        days = data.RANGE_TO_DAYS[time_range]
+        has_ohlc_res = time_range in ("90D", "ALL")
+        chart_type_options = ["Candlestick", "Line", "Area"] if has_ohlc_res else ["Line", "Area"]
+        chart_type = st.selectbox("Chart type", chart_type_options, index=0).lower()
+    with top_cols[3]:
+        with st.expander("Indicators", expanded=False):
+            ma_cols = st.columns(3)
+            show_mas = [w for w, c in zip((7, 25, 50), ma_cols) if c.checkbox(f"MA{w}", value=(w == 7))]
+            ind_cols = st.columns(3)
+            show_bollinger = ind_cols[0].checkbox("Bollinger Bands")
+            show_rsi = ind_cols[1].checkbox("RSI")
+            show_macd = ind_cols[2].checkbox("MACD")
+
+    if not has_ohlc_res and chart_type == "candlestick":
+        chart_type = "line"
+
+    price_df = data.load_price_daily(coin_id, days=days)
+    ohlc_df = data.load_ohlc(coin_id, days=days) if has_ohlc_res else pd.DataFrame()
+
+    if price_df.empty:
+        st.info("No price history available for this coin yet.")
+        return
+
+    if time_range in ("7D", "30D") and chart_type == "candlestick":
+        st.caption(
+            "ℹ️ Candlesticks need OHLC data; CoinGecko's free tier only gives ~4-day "
+            "candle resolution at this ingestion window, so 7D/30D show the daily "
+            "price line instead of fabricating finer candles."
+        )
+
+    fig = charts.build_technical_chart(
+        price_df, ohlc_df, chart_type, show_mas, show_bollinger, show_rsi, show_macd,
+    )
+    st.plotly_chart(
+        fig, width="stretch",
+        config={"displayModeBar": True, "toImageButtonOptions": {"format": "png", "filename": f"{coin_id}_chart"}},
+    )
+
+    dl_cols = st.columns([1, 1, 6])
+    with dl_cols[0]:
+        st.download_button("⬇ CSV", price_df.to_csv(index=False), file_name=f"{coin_id}_daily.csv", width="stretch")
+    with dl_cols[1]:
+        st.caption("PNG export: camera icon in chart toolbar ⤴")
+
+
+def render_comparison(coin_choices: pd.DataFrame) -> None:
+    with st.expander("🔀 Comparison mode (overlay multiple coins, normalized)", expanded=False):
+        label_to_id = {f'{r["name"]} ({r["symbol"]})': r["coin_id"] for _, r in coin_choices.iterrows()}
+        labels = st.multiselect("Compare coins", list(label_to_id.keys()), default=list(label_to_id.keys())[:2])
+        if len(labels) < 2:
+            st.caption("Pick at least 2 coins to compare.")
+            return
+        range_choice = st.radio("Range", RANGES, horizontal=True, index=2, key="cmp_range")
+        days = data.RANGE_TO_DAYS[range_choice]
+        series = {}
+        for label in labels:
+            coin_id = label_to_id[label]
+            df = data.load_price_daily(coin_id, days=days)
+            symbol = coin_choices.loc[coin_choices["coin_id"] == coin_id, "symbol"].iloc[0]
+            series[symbol] = df[["price_date", "price_usd"]]
+        st.plotly_chart(charts.build_comparison_chart(series), width="stretch")
 
 
 def render_ask_section() -> None:
@@ -471,18 +209,18 @@ def render_ask_section() -> None:
     if "question" not in st.session_state:
         st.session_state["question"] = ""
 
-    chip_cols = st.columns(len(SUGGESTED_QUESTIONS))
-    for col, q in zip(chip_cols, SUGGESTED_QUESTIONS):
+    chip_cols = st.columns(len(ai.SUGGESTED_QUESTIONS))
+    for col, q in zip(chip_cols, ai.SUGGESTED_QUESTIONS):
         with col:
             if st.button(q, key=f"chip_{q}", width="stretch"):
                 st.session_state["question"] = q
 
+    input_label = "Ask a question about the crypto market"
     question = st.text_input(
-        "Ask a question about the crypto market",
-        key="question",
-        label_visibility="collapsed",
-        placeholder="e.g. Which coins are furthest below their all-time high right now?",
+        input_label, key="question", label_visibility="collapsed",
+        placeholder="e.g. Which coins are furthest below their all-time high right now?  (⌘K)",
     )
+    comp.inject_command_palette_shortcut(input_label)
     ask_clicked = st.button("Ask →", type="primary")
 
     if not (ask_clicked and question):
@@ -490,8 +228,8 @@ def render_ask_section() -> None:
 
     with st.spinner("Thinking in SQL..."):
         try:
-            sql = question_to_sql(question)
-            validate_sql(sql)
+            sql = ai.question_to_sql(question)
+            ai.validate_sql(sql)
         except ValueError as exc:
             st.error(f"Could not safely execute that question: {exc}")
             return
@@ -499,7 +237,7 @@ def render_ask_section() -> None:
     with st.expander("🔍 Generated SQL", expanded=False):
         st.code(sql, language="sql")
 
-    con = get_duckdb_connection()
+    con = data.get_duckdb_connection()
     try:
         df: pd.DataFrame = con.execute(sql).fetchdf()
     except Exception as exc:  # noqa: BLE001 - surface any DB error to the user
@@ -513,16 +251,22 @@ def render_ask_section() -> None:
     if df.shape == (1, 1):
         value = df.iloc[0, 0]
         st.markdown(
-            stat_card(question, f"{value:,.4g}" if isinstance(value, (int, float)) else str(value)),
+            comp.stat_card_html(question, f"{value:,.4g}" if isinstance(value, (int, float)) else str(value)),
             unsafe_allow_html=True,
         )
         return
 
     st.dataframe(df, width="stretch", hide_index=True)
 
+    dl_cols = st.columns([1, 6])
+    with dl_cols[0]:
+        st.download_button("⬇ CSV", df.to_csv(index=False), file_name="query_result.csv", width="stretch")
+
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     date_cols = [c for c in df.columns if "date" in c.lower() or "time" in c.lower()]
-    template = plotly_dark_template()
+    template = theme.plotly_dark_template()
+
+    import plotly.graph_objects as go
 
     if numeric_cols and date_cols:
         fig = go.Figure()
@@ -530,41 +274,47 @@ def render_ask_section() -> None:
             fig.add_trace(
                 go.Scatter(
                     x=df[date_cols[0]], y=df[col], mode="lines+markers", name=col,
-                    line=dict(width=2, color=CATEGORICAL[i % len(CATEGORICAL)]),
+                    line=dict(width=2, color=theme.CATEGORICAL[i % len(theme.CATEGORICAL)]),
                     marker=dict(size=8),
                 )
             )
-        fig.update_layout(template=template, height=420, hovermode="x unified")
+        fig.update_layout(template=template, height=420)
         st.plotly_chart(fig, width="stretch")
     elif numeric_cols and len(df.columns) - len(numeric_cols) >= 1:
         label_col = [c for c in df.columns if c not in numeric_cols][0]
-        fig = go.Figure(
-            go.Bar(
-                x=df[label_col], y=df[numeric_cols[0]],
-                marker=dict(color=CATEGORICAL[0]),
-            )
-        )
+        fig = go.Figure(go.Bar(x=df[label_col], y=df[numeric_cols[0]], marker=dict(color=theme.CATEGORICAL[0])))
         fig.update_layout(template=template, height=420)
         st.plotly_chart(fig, width="stretch")
 
 
 def render_footer() -> None:
     st.markdown(
-        '<div class="footer-note">Built with CoinGecko · dbt · MotherDuck · '
-        f"{('Anthropic Claude' if LLM_PROVIDER == 'anthropic' else 'Groq')} · Streamlit · "
+        '<div class="footer-note">Built with CoinGecko · alternative.me · dbt · MotherDuck · '
+        f"{('Anthropic Claude' if ai.LLM_PROVIDER == 'anthropic' else 'Groq')} · Streamlit · "
         "orchestrated via GitHub Actions</div>",
         unsafe_allow_html=True,
     )
 
 
 def main() -> None:
-    st.set_page_config(page_title="Ask Your Crypto Data", page_icon="📊", layout="wide")
-    inject_css()
-    render_hero()
+    st.set_page_config(page_title="Ask Your Crypto Data", page_icon="⚡", layout="wide")
+    theme.inject_css()
 
-    df = load_overview()
-    render_stats(df)
-    render_market_table(df)
+    overview = data.load_overview()
+    comp.render_ticker_tape(overview)
+    render_hero()
+    render_kpis(overview)
+
+    main_col, side_col = st.columns([3, 1])
+    with main_col:
+        coin_choices = data.load_coin_choices()
+        render_technical_chart(coin_choices)
+        render_comparison(coin_choices)
+    with side_col:
+        st.markdown('<div class="section-title">😨 Fear &amp; Greed</div>', unsafe_allow_html=True)
+        render_fear_greed(days=None)
+
+    render_market_table(overview)
     render_ask_section()
     render_footer()
 

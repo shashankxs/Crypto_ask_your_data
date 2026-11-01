@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
-import app as ask_app  # noqa: E402
+import ai as ask_app  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
