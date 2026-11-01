@@ -148,13 +148,19 @@ def _call_groq(question: str) -> str:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": question},
             ],
-            "max_tokens": 400,
+            "max_completion_tokens": 1024,
             "temperature": 0,
+            # gpt-oss is a reasoning model; keep its chain-of-thought out of
+            # `content` so it doesn't eat the token budget or leak into the SQL.
+            "reasoning_effort": "low",
         },
         timeout=30,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    content = resp.json()["choices"][0]["message"]["content"]
+    if not content.strip():
+        raise ValueError("The model returned an empty response — try rephrasing the question.")
+    return content
 
 
 def _call_anthropic(question: str) -> str:
@@ -175,11 +181,12 @@ def _call_anthropic(question: str) -> str:
 
 
 def validate_sql(sql: str) -> None:
-    if not sql.lower().startswith("select"):
-        raise ValueError("Generated query must be a single SELECT statement.")
+    stripped = sql.strip()
+    if not (stripped.lower().startswith("select") or stripped.lower().startswith("with")):
+        raise ValueError("Generated query must be a single SELECT (optionally with CTEs) statement.")
     if FORBIDDEN_PATTERN.search(sql):
         raise ValueError("Generated query contains a disallowed keyword.")
-    if ";" in sql.strip().rstrip(";"):
+    if ";" in stripped.rstrip(";"):
         raise ValueError("Only a single statement is allowed.")
 
 
