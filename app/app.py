@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq").lower()
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 SCHEMA_DESCRIPTION = """
 You can query these dbt-modeled tables in the `marts` schema:

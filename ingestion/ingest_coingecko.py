@@ -22,7 +22,8 @@ import requests
 from dotenv import load_dotenv
 
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
-REQUEST_PAUSE_SECONDS = 1.5  # stay under CoinGecko's free-tier rate limit
+REQUEST_PAUSE_SECONDS = 7  # CoinGecko's public free tier is ~5-15 calls/min
+MAX_RETRIES = 4
 
 
 def get_connection() -> duckdb.DuckDBPyConnection:
@@ -34,7 +35,10 @@ def get_connection() -> duckdb.DuckDBPyConnection:
             "MOTHERDUCK_TOKEN is not set. Copy .env.example to .env and fill it in, "
             "or `export MOTHERDUCK_TOKEN=...` (free token at https://motherduck.com)."
         )
-    return duckdb.connect(f"md:{database}?motherduck_token={token}")
+    con = duckdb.connect(f"md:?motherduck_token={token}")
+    con.execute(f"CREATE DATABASE IF NOT EXISTS {database};")
+    con.execute(f"USE {database};")
+    return con
 
 
 def fetch_market_snapshot(top: int) -> list[dict]:
@@ -54,11 +58,18 @@ def fetch_market_snapshot(top: int) -> list[dict]:
 
 
 def fetch_history(coin_id: str, days: int) -> list[tuple[str, float, float, float]]:
-    resp = requests.get(
-        f"{COINGECKO_BASE}/coins/{coin_id}/market_chart",
-        params={"vs_currency": "usd", "days": days, "interval": "daily"},
-        timeout=30,
-    )
+    resp = None
+    for attempt in range(MAX_RETRIES):
+        resp = requests.get(
+            f"{COINGECKO_BASE}/coins/{coin_id}/market_chart",
+            params={"vs_currency": "usd", "days": days, "interval": "daily"},
+            timeout=30,
+        )
+        if resp.status_code != 429:
+            break
+        wait = int(resp.headers.get("Retry-After", REQUEST_PAUSE_SECONDS * (attempt + 2)))
+        print(f"  rate limited on {coin_id}, waiting {wait}s (attempt {attempt + 1}/{MAX_RETRIES})")
+        time.sleep(wait)
     resp.raise_for_status()
     payload = resp.json()
     prices = payload.get("prices", [])
