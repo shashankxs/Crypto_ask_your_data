@@ -90,6 +90,7 @@ def load_snapshot(con: duckdb.DuckDBPyConnection, snapshot: list[dict]) -> None:
             coin_id VARCHAR,
             symbol VARCHAR,
             name VARCHAR,
+            image_url VARCHAR,
             current_price DOUBLE,
             market_cap DOUBLE,
             market_cap_rank INTEGER,
@@ -109,6 +110,7 @@ def load_snapshot(con: duckdb.DuckDBPyConnection, snapshot: list[dict]) -> None:
             c["id"],
             c["symbol"],
             c["name"],
+            c.get("image"),
             c.get("current_price"),
             c.get("market_cap"),
             c.get("market_cap_rank"),
@@ -124,7 +126,7 @@ def load_snapshot(con: duckdb.DuckDBPyConnection, snapshot: list[dict]) -> None:
     con.executemany(
         """
         INSERT INTO raw.coin_market_snapshot VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )

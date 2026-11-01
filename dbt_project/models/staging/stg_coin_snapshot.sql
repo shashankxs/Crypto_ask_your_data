@@ -7,6 +7,7 @@ select
     coin_id,
     upper(symbol)                  as symbol,
     name,
+    image_url,
     current_price                  as price_usd,
     market_cap                     as market_cap_usd,
     market_cap_rank,

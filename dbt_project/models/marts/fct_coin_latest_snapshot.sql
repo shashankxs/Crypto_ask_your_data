@@ -9,6 +9,7 @@ select
     coin_id,
     symbol,
     name,
+    image_url,
     market_cap_rank,
     price_usd,
     market_cap_usd,
