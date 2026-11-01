@@ -45,13 +45,13 @@ stays in sync without any manual steps.
 - **Warehouse**: cloud-hosted DuckDB (MotherDuck) — same SQL engine dbt and the app both speak, swappable for Snowflake/BigQuery by changing `profiles.yml`.
 - **Transformation**: dbt staging → marts with documented models and 10+ data tests (not-null, uniqueness, referential integrity) that run on every scheduled build.
 - **Orchestration**: GitHub Actions cron runs ingestion + `dbt build` every 6 hours.
-- **AI layer**: an LLM text-to-SQL interface constrained to a read-only, schema-scoped prompt with query validation before execution — a natural-language analytics experience, not just a dashboard.
+- **AI layer**: an LLM text-to-SQL interface constrained to a read-only, schema-scoped prompt with query validation before execution — a natural-language analytics experience, not just a dashboard. Provider is pluggable (Groq by default, Anthropic optionally) via one env var.
 
 ## Setup
 
-1. **MotherDuck**: sign up free at [motherduck.com](https://motherduck.com), grab a token.
-2. **Anthropic**: get an API key at [console.anthropic.com](https://console.anthropic.com).
-3. Copy `.env.example` to `.env` and fill in both.
+1. **MotherDuck**: sign up free at [motherduck.com](https://motherduck.com). In the app, go to the gear icon → **Access Tokens** → **Create Token**.
+2. **Groq** (free, no credit card): get a key at [console.groq.com/keys](https://console.groq.com/keys).
+3. Copy `.env.example` to `.env` and fill in `MOTHERDUCK_TOKEN` and `GROQ_API_KEY`.
 4. Install dependencies:
    ```
    pip install -r requirements.txt
@@ -80,7 +80,7 @@ dbt models every 6 hours automatically.
 ### Deploying the app
 
 Push to GitHub, then deploy `app/app.py` on [Streamlit Community Cloud](https://streamlit.io/cloud)
-for a free public demo link — set `MOTHERDUCK_TOKEN` and `ANTHROPIC_API_KEY`
+for a free public demo link — set `MOTHERDUCK_TOKEN` and `GROQ_API_KEY`
 as Streamlit secrets.
 
 ## Sample questions

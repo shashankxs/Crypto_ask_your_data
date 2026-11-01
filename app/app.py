@@ -2,9 +2,13 @@
 "Ask Your Data" — a natural-language front end over the crypto warehouse
 built by ingestion/ingest_coingecko.py + the dbt_project/ models.
 
-The user asks a plain-English question; Claude translates it into a SQL
+The user asks a plain-English question; an LLM translates it into a SQL
 query against the dbt marts (schema injected into the prompt), the app
 executes it read-only against MotherDuck, and renders a table + chart.
+
+Supports two LLM providers (set LLM_PROVIDER in .env):
+    groq      (default) — free API, no credit card required: https://console.groq.com
+    anthropic — requires a billed Anthropic API key
 
 Run locally:
     streamlit run app/app.py
@@ -17,11 +21,14 @@ import re
 import duckdb
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
-from anthropic import Anthropic
 from dotenv import load_dotenv
 
 load_dotenv()
+
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq").lower()
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 SCHEMA_DESCRIPTION = """
 You can query these dbt-modeled tables in the `marts` schema:
@@ -68,24 +75,52 @@ def get_duckdb_connection() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(f"md:{database}?motherduck_token={token}", read_only=True)
 
 
-def get_anthropic_client() -> Anthropic:
+def question_to_sql(question: str) -> str:
+    if LLM_PROVIDER == "anthropic":
+        raw = _call_anthropic(question)
+    else:
+        raw = _call_groq(question)
+    return re.sub(r"^```sql\s*|```$", "", raw.strip(), flags=re.IGNORECASE | re.MULTILINE).strip()
+
+
+def _call_groq(question: str) -> str:
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        st.error("GROQ_API_KEY is not set. Get a free key at https://console.groq.com and add it to .env.")
+        st.stop()
+    resp = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "model": GROQ_MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": question},
+            ],
+            "max_tokens": 400,
+            "temperature": 0,
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+def _call_anthropic(question: str) -> str:
+    from anthropic import Anthropic  # optional dependency, only needed for this provider
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         st.error("ANTHROPIC_API_KEY is not set. Add it to .env or Streamlit secrets.")
         st.stop()
-    return Anthropic(api_key=api_key)
-
-
-def question_to_sql(client: Anthropic, question: str) -> str:
+    client = Anthropic(api_key=api_key)
     response = client.messages.create(
         model="claude-sonnet-5-5",
         max_tokens=400,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": question}],
     )
-    sql = response.content[0].text.strip()
-    sql = re.sub(r"^```sql\s*|```$", "", sql, flags=re.IGNORECASE | re.MULTILINE).strip()
-    return sql
+    return response.content[0].text
 
 
 def validate_sql(sql: str) -> None:
@@ -102,7 +137,7 @@ def main() -> None:
     st.title("📊 Ask Your Crypto Data")
     st.caption(
         "A dbt-modeled warehouse of live CoinGecko market data, queried in plain English. "
-        "Ask a question below — Claude writes the SQL, DuckDB/MotherDuck runs it."
+        "Ask a question below — an LLM writes the SQL, DuckDB/MotherDuck runs it."
     )
 
     with st.sidebar:
@@ -121,10 +156,9 @@ def main() -> None:
     question = st.text_input("Ask a question about the crypto market:", "")
 
     if st.button("Ask", type="primary") and question:
-        client = get_anthropic_client()
         with st.spinner("Generating SQL..."):
             try:
-                sql = question_to_sql(client, question)
+                sql = question_to_sql(question)
                 validate_sql(sql)
             except ValueError as exc:
                 st.error(f"Could not safely execute that question: {exc}")

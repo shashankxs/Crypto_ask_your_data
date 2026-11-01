@@ -2,7 +2,9 @@ duckdb>=1.1.0
 requests>=2.32.0
 dbt-duckdb>=1.8.0
 streamlit>=1.38.0
-anthropic>=0.40.0
 pandas>=2.2.0
 plotly>=5.24.0
 python-dotenv>=1.0.0
+
+# Only needed if you set LLM_PROVIDER=anthropic in .env
+# anthropic>=0.40.0
