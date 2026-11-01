@@ -38,6 +38,7 @@ jobs:
         run: |
           python ingestion/ingest_coingecko.py --top 5 --history-days 14
           python ingestion/ingest_fear_greed.py --days 14
+          python ingestion/ingest_coingecko_ohlc.py --top 5 --days 14
 
       - name: Install dbt packages
         working-directory: dbt_project

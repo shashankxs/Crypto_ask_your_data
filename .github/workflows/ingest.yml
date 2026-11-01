@@ -27,6 +27,9 @@ jobs:
       - name: Run Fear & Greed Index ingestion
         run: python ingestion/ingest_fear_greed.py --days 90
 
+      - name: Run OHLC (candlestick) ingestion
+        run: python ingestion/ingest_coingecko_ohlc.py --top 25 --days 90
+
       - name: Install dbt packages
         working-directory: dbt_project
         run: dbt deps --profiles-dir .
